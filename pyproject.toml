@@ -1,0 +1,5 @@
+[project]
+name = "numpy_teacher"
+description = "A linter that teaches beginners how to use Numpy."
+version = "0.0a0"
+requires-python = ">=3.10"
