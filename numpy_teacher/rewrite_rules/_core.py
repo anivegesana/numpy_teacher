@@ -3,7 +3,7 @@ import os
 import types
 import warnings
 
-__all__ = ('Rewriter', 'RestoreReversablesRewriter', 'Warner', 'is_pure', 'get_shapes_from_list_comprehensions')
+__all__ = ('Rewriter', 'RestoreReversablesRewriter', 'Warner', 'is_pure', 'is_sized', 'get_shapes_from_list_comprehensions')
 
 class Rewriter(NodeTransformer):
     def __init__(self):
@@ -106,6 +106,12 @@ def is_pure(node):
             return purity
         case _:
             return False
+
+def is_sized(classname):
+    # TODO: use static analysis to see if a class has a __len__ function available
+    if isinstance(classname, Name) and classname.id in ('dict', 'frozenset', 'list', 'range', 'set', 'tuple'):
+        return True
+    return False
 
 def get_shapes_from_list_comprehensions(lc, num_times, const):
     # TODO: iterate through a series of list comprehensions and find their

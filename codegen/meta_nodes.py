@@ -25,10 +25,11 @@ class expr:
         return node
 
 class escaped(expr):
-    def __init__(self, name):
+    def __init__(self, code, name=None):
         self.name = name
+        self.code = code
     def __repr__(self):
-        return self.name
+        return self.code
     def __iter__(self):
         yield self
     def resolve(self, node, counts):
