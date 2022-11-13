@@ -24,8 +24,8 @@ def rewrite_file(file):
         for i in range(55):
             rewrite.modified = False
             ast_ = rewrite.visit(ast_)
-            print(ast.unparse(ast_))
-            print('-====-')
+            # print(ast.unparse(ast_))
+            # print(f'{rewrite} -====-')
             if not rewrite.modified:
                 break
 

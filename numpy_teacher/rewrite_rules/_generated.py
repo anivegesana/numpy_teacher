@@ -4,6 +4,7 @@
 
 from ast import *
 from ._core import *
+from ._comprehensions import *
 
 
 class NumpyRewriter(Rewriter):
@@ -61,12 +62,64 @@ class NumpyRewriter(Rewriter):
                 nnode.old = None
                 return nnode
 
+            # This collapses multiple 'if's that follow each other in the same comprehension
+            # into one 'if' with multiple 'and's
+            # TODO: Generalize
+            case ListComp(
+                elt=Name(id=v0, ctx=Load()),
+                generators=[
+                    comprehension(
+                        target=Name(id=_v0_0, ctx=Store()),
+                        iter=in0,
+                        ifs=in1,
+                        is_async=0)]) if v0 == _v0_0 and len(in1) > 0:
+                nnode = Call(
+                    func=Name(id='list', ctx=Load()),
+                    args=[
+                        Call(
+                            func=Name(id='filter', ctx=Load()),
+                            args=[
+                                Lambda(
+                                    args=arguments(
+                                        posonlyargs=[],
+                                        args=[
+                                            arg(arg=v0)],
+                                        kwonlyargs=[],
+                                        kw_defaults=[],
+                                        defaults=[]),
+                                    body=BoolOp(
+                                        op=And(),
+                                        values=in1
+                                    )),
+                                in0],
+                            keywords=[])],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
             case _:
                 return self.generic_visit(node)
 
     def visit_Call(self, node):
         match node:
-            # forall(['in0'], 'np.array(range(in0))', 'np.arange(in0)')
+            # forall([(ListComp() | List() | BinOp(op=Add() | Mult())) as in0, 'out'], 'np.array(in0)', 'out', 'eval', ('body', -1, 'value'), '(out := analyze_list_to_array(in0, self))')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='array',
+                    ctx=Load()),
+                args=[
+                    (ListComp() | List() | BinOp(op=Add() | Mult())) as in0],
+                keywords=[]) if (out := analyze_list_to_array(in0, self)):
+                nnode = out
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['*args'], 'np.array(range(*args))', 'np.arange(*args)')
             case Call(
                 func=Attribute(
                     value=Name(id=self.aliases.numpy, ctx=Load()),
@@ -76,7 +129,7 @@ class NumpyRewriter(Rewriter):
                     Call(
                         func=Name(id='range', ctx=Load()),
                         args=[
-                            in0],
+                            *args],
                         keywords=[])],
                 keywords=[]):
                 nnode = Call(
@@ -85,7 +138,7 @@ class NumpyRewriter(Rewriter):
                         attr='arange',
                         ctx=Load()),
                     args=[
-                        in0],
+                        *args],
                     keywords=[])
                 self.modified = True
                 copy_location(nnode, node)
@@ -153,65 +206,7 @@ class NumpyRewriter(Rewriter):
                 nnode.old = None
                 return nnode
 
-            # forall(['in0', 'in1'], 'np.array(in0 * [in1])', 'np.full(in0, in1)')
-            case Call(
-                func=Attribute(
-                    value=Name(id=self.aliases.numpy, ctx=Load()),
-                    attr='array',
-                    ctx=Load()),
-                args=[
-                    BinOp(
-                        left=in0,
-                        op=Mult(),
-                        right=List(
-                            elts=[
-                                in1],
-                            ctx=Load()))],
-                keywords=[]):
-                nnode = Call(
-                    func=Attribute(
-                        value=Name(id=self.aliases.numpy, ctx=Load()),
-                        attr='full',
-                        ctx=Load()),
-                    args=[
-                        in0,
-                        in1],
-                    keywords=[])
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            # forall(['in0', 'in1'], 'np.array([in1] * in0)', 'np.full(in0, in1)', 'eval', ('body', -1, 'value'), 'is_pure(in1) or is_pure(in0)')
-            case Call(
-                func=Attribute(
-                    value=Name(id=self.aliases.numpy, ctx=Load()),
-                    attr='array',
-                    ctx=Load()),
-                args=[
-                    BinOp(
-                        left=List(
-                            elts=[
-                                in1],
-                            ctx=Load()),
-                        op=Mult(),
-                        right=in0)],
-                keywords=[]) if is_pure(in1) or is_pure(in0):
-                nnode = Call(
-                    func=Attribute(
-                        value=Name(id=self.aliases.numpy, ctx=Load()),
-                        attr='full',
-                        ctx=Load()),
-                    args=[
-                        in0,
-                        in1],
-                    keywords=[])
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            # forall([var('v0'), 'in0', 'in1'], 'np.array([in1 for v0 in in0])', 'np.full(sum(1 for _ in in0), in1)', 'eval', ('body', -1, 'value'), 'is_pure(in1)')
+            # forall([var('v0'), 'in0', 'in1'], 'np.array([in1 for v0 in in0])', 'np.full(sum(1 for v0 in in0), in1)', 'eval', ('body', -1, 'value'), 'is_pure(in1)')
             case Call(
                 func=Attribute(
                     value=Name(id=self.aliases.numpy, ctx=Load()),
@@ -240,7 +235,7 @@ class NumpyRewriter(Rewriter):
                                     elt=Constant(value=1),
                                     generators=[
                                         comprehension(
-                                            target=Name(id='_', ctx=Store()),
+                                            target=Name(id=v0, ctx=Store()),
                                             iter=in0,
                                             ifs=[],
                                             is_async=0)])],
@@ -252,6 +247,421 @@ class NumpyRewriter(Rewriter):
                 nnode.old = None
                 return nnode
 
+            # forall(['in0', var('v0'), (Call(func=f0)) as in0], 'sum(1 for v0 in x0)', 'len(in0)', 'eval', ('body', -1, 'value'), 'is_sized(f0)')
+            case Call(
+                func=Name(id='sum', ctx=Load()),
+                args=[
+                    GeneratorExp(
+                        elt=Constant(value=1),
+                        generators=[
+                            comprehension(
+                                target=Name(id=v0, ctx=Store()),
+                                iter=(Call(func=f0)) as in0,
+                                ifs=[],
+                                is_async=0)])],
+                keywords=[]) if is_sized(f0):
+                nnode = Call(
+                    func=Name(id='len', ctx=Load()),
+                    args=[
+                        in0],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['in0'], 'len(range(in0))', 'max(in0, 0)')
+            case Call(
+                func=Name(id='len', ctx=Load()),
+                args=[
+                    Call(
+                        func=Name(id='range', ctx=Load()),
+                        args=[
+                            in0],
+                        keywords=[])],
+                keywords=[]):
+                nnode = Call(
+                    func=Name(id='max', ctx=Load()),
+                    args=[
+                        in0,
+                        Constant(value=0)],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['in0', 'in1'], 'len(range(in0, in1))', 'max(-in0 + in1, 0)')
+            case Call(
+                func=Name(id='len', ctx=Load()),
+                args=[
+                    Call(
+                        func=Name(id='range', ctx=Load()),
+                        args=[
+                            in0,
+                            in1],
+                        keywords=[])],
+                keywords=[]):
+                nnode = Call(
+                    func=Name(id='max', ctx=Load()),
+                    args=[
+                        BinOp(
+                            left=UnaryOp(op=USub(), operand=in0),
+                            op=Add(),
+                            right=in1),
+                        Constant(value=0)],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=min(c0, c1))], 'min(c0, c1)', '_const')
+            case Call(
+                func=Name(id='min', ctx=Load()),
+                args=[
+                    Constant(value=c0),
+                    Constant(value=c1)],
+                keywords=[]):
+                nnode = Constant(value=min(c0, c1))
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=max(c0, c1))], 'max(c0, c1)', '_const')
+            case Call(
+                func=Name(id='max', ctx=Load()),
+                args=[
+                    Constant(value=c0),
+                    Constant(value=c1)],
+                keywords=[]):
+                nnode = Constant(value=max(c0, c1))
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['*cargs'], 'min(*cargs)', 'cval', 'eval', ('body', -1, 'value'), '(cval := are_all_constants(cargs))')
+            case Call(
+                func=Name(id='min', ctx=Load()),
+                args=[
+                    *cargs],
+                keywords=[]) if (cval := are_all_constants(cargs)):
+                nnode = Name(id='cval', ctx=Load())
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['*cargs'], 'max(*cargs)', 'cval', 'eval', ('body', -1, 'value'), '(cval := are_all_constants(cargs))')
+            case Call(
+                func=Name(id='max', ctx=Load()),
+                args=[
+                    *cargs],
+                keywords=[]) if (cval := are_all_constants(cargs)):
+                nnode = Name(id='cval', ctx=Load())
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([(Constant() as inner), (Constant(0) | Constant(-1)), 'inner'], 'np.expand_dims(inner_match, zono)', 'np.full(1, inner)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='expand_dims',
+                    ctx=Load()),
+                args=[
+                    (Constant() as inner),
+                    (Constant(0) | Constant(-1))],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='full',
+                        ctx=Load()),
+                    args=[
+                        Constant(value=1),
+                        inner],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['inner', 'dims', 'rdim', dims_extend(dims, Constant(1), rdim)], 'np.expand_dims(np.full(dims, inner), rdim)', 'np.full(new_dims, inner)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='expand_dims',
+                    ctx=Load()),
+                args=[
+                    Call(
+                        func=Attribute(
+                            value=Name(id=self.aliases.numpy, ctx=Load()),
+                            attr='full',
+                            ctx=Load()),
+                        args=[
+                            dims,
+                            inner],
+                        keywords=[]),
+                    rdim],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='full',
+                        ctx=Load()),
+                    args=[
+                        dims_extend(dims, Constant(1), rdim),
+                        inner],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['inner', 'reps', 'dims', 'rdim', dim_repeat(dims, reps, rdim)], 'np.repeat(np.full(dims, inner), reps, rdim)', 'np.full(new_dims, inner)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='repeat',
+                    ctx=Load()),
+                args=[
+                    Call(
+                        func=Attribute(
+                            value=Name(id=self.aliases.numpy, ctx=Load()),
+                            attr='full',
+                            ctx=Load()),
+                        args=[
+                            dims,
+                            inner],
+                        keywords=[]),
+                    reps,
+                    rdim],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='full',
+                        ctx=Load()),
+                    args=[
+                        dim_repeat(dims, reps, rdim),
+                        inner],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['inner', 'dim'], 'np.stack([inner], dim)', 'np.expand_dims(inner, dim)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='stack',
+                    ctx=Load()),
+                args=[
+                    List(
+                        elts=[
+                            inner],
+                        ctx=Load()),
+                    dim],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='expand_dims',
+                        ctx=Load()),
+                    args=[
+                        inner,
+                        dim],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['inner', 'dim'], 'np.stack(1 * [inner], dim)', 'np.expand_dims(inner, dim)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='stack',
+                    ctx=Load()),
+                args=[
+                    BinOp(
+                        left=Constant(value=1),
+                        op=Mult(),
+                        right=List(
+                            elts=[
+                                inner],
+                            ctx=Load())),
+                    dim],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='expand_dims',
+                        ctx=Load()),
+                    args=[
+                        inner,
+                        dim],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['inner', 'dim'], 'np.stack([inner] * 1, dim)', 'np.expand_dims(inner, dim)')
+            case Call(
+                func=Attribute(
+                    value=Name(id=self.aliases.numpy, ctx=Load()),
+                    attr='stack',
+                    ctx=Load()),
+                args=[
+                    BinOp(
+                        left=List(
+                            elts=[
+                                inner],
+                            ctx=Load()),
+                        op=Mult(),
+                        right=Constant(value=1)),
+                    dim],
+                keywords=[]):
+                nnode = Call(
+                    func=Attribute(
+                        value=Name(id=self.aliases.numpy, ctx=Load()),
+                        attr='expand_dims',
+                        ctx=Load()),
+                    args=[
+                        inner,
+                        dim],
+                    keywords=[])
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            case _:
+                return self.generic_visit(node)
+
+    def visit_UnaryOp(self, node):
+        match node:
+            # forall([Constant(value=c0), Constant(value=+c0)], '+c0', '_const')
+            case UnaryOp(op=UAdd(), operand=Constant(value=c0)):
+                nnode = Constant(value=+c0)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=-c0)], '-c0', '_const')
+            case UnaryOp(op=USub(), operand=Constant(value=c0)):
+                nnode = Constant(value=-c0)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=not c0)], 'not c0', '_const')
+            case UnaryOp(op=Not(), operand=Constant(value=c0)):
+                nnode = Constant(value=not c0)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            case _:
+                return self.generic_visit(node)
+
+    def visit_BinOp(self, node):
+        match node:
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 + c1)], 'c0 + c1', '_const')
+            case BinOp(left=Constant(value=c0), op=Add(), right=Constant(value=c1)):
+                nnode = Constant(value=c0 + c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 - c1)], 'c0 - c1', '_const')
+            case BinOp(left=Constant(value=c0), op=Sub(), right=Constant(value=c1)):
+                nnode = Constant(value=c0 - c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 * c1)], 'c0 * c1', '_const')
+            case BinOp(left=Constant(value=c0), op=Mult(), right=Constant(value=c1)):
+                nnode = Constant(value=c0 * c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 / c1)], 'c0 / c1', '_const')
+            case BinOp(left=Constant(value=c0), op=Div(), right=Constant(value=c1)):
+                nnode = Constant(value=c0 / c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 ** c1)], 'c0 ** c1', '_const')
+            case BinOp(left=Constant(value=c0), op=Pow(), right=Constant(value=c1)):
+                nnode = Constant(value=c0 ** c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall(['in0', 'in1'], '-in0 + in1', 'in1 - in0', 'eval', ('body', -1, 'value'), 'is_pure(in0) or is_pure(in1)')
+            case BinOp(
+                left=UnaryOp(op=USub(), operand=in0),
+                op=Add(),
+                right=in1) if is_pure(in0) or is_pure(in1):
+                nnode = BinOp(left=in1, op=Sub(), right=in0)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            case _:
+                return self.generic_visit(node)
+
+    def visit_BoolOp(self, node):
+        match node:
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 or c1)], 'c0 or c1', '_const')
+            case BoolOp(
+                op=Or(),
+                values=[
+                    Constant(value=c0),
+                    Constant(value=c1)]):
+                nnode = Constant(value=c0 or c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=c1), Constant(value=c0 and c1)], 'c0 and c1', '_const')
+            case BoolOp(
+                op=And(),
+                values=[
+                    Constant(value=c0),
+                    Constant(value=c1)]):
+                nnode = Constant(value=c0 and c1)
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            case _:
+                return self.generic_visit(node)
+
+class NumpySpecialize(Rewriter):
+    def visit_Call(self, node):
+        match node:
             # forall(['in0', Constant(float(0.))], 'np.full(in0, c0)', 'np.zeros(in0)')
             case Call(
                 func=Attribute(
@@ -454,104 +864,6 @@ class NumpyRewriter(Rewriter):
                 nnode.old = None
                 return nnode
 
-            # forall(['in0', var('v0'), (Call(func=f0)) as in0], 'sum(1 for v0 in x0)', 'len(in0)', 'eval', ('body', -1, 'value'), 'is_sized(f0)')
-            case Call(
-                func=Name(id='sum', ctx=Load()),
-                args=[
-                    GeneratorExp(
-                        elt=Constant(value=1),
-                        generators=[
-                            comprehension(
-                                target=Name(id=v0, ctx=Store()),
-                                iter=(Call(func=f0)) as in0,
-                                ifs=[],
-                                is_async=0)])],
-                keywords=[]) if is_sized(f0):
-                nnode = Call(
-                    func=Name(id='len', ctx=Load()),
-                    args=[
-                        in0],
-                    keywords=[])
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            # forall(['in0'], 'len(range(in0))', 'max(in0, 0)')
-            case Call(
-                func=Name(id='len', ctx=Load()),
-                args=[
-                    Call(
-                        func=Name(id='range', ctx=Load()),
-                        args=[
-                            in0],
-                        keywords=[])],
-                keywords=[]):
-                nnode = Call(
-                    func=Name(id='max', ctx=Load()),
-                    args=[
-                        in0,
-                        Constant(value=0)],
-                    keywords=[])
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            # forall(['in0', 'in1'], 'len(range(in0, in1))', 'max(-in0 + in1, 0)')
-            case Call(
-                func=Name(id='len', ctx=Load()),
-                args=[
-                    Call(
-                        func=Name(id='range', ctx=Load()),
-                        args=[
-                            in0,
-                            in1],
-                        keywords=[])],
-                keywords=[]):
-                nnode = Call(
-                    func=Name(id='max', ctx=Load()),
-                    args=[
-                        BinOp(
-                            left=UnaryOp(op=USub(), operand=in0),
-                            op=Add(),
-                            right=in1),
-                        Constant(value=0)],
-                    keywords=[])
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            # forall([Constant(value=c0), Constant(value=c1), Constant(value=max(c0, c1))], 'max(c0, c1)', '_const')
-            case Call(
-                func=Name(id='max', ctx=Load()),
-                args=[
-                    Constant(value=c0),
-                    Constant(value=c1)],
-                keywords=[]):
-                nnode = Constant(value=max(c0, c1))
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
-            case _:
-                return self.generic_visit(node)
-
-    def visit_BinOp(self, node):
-        match node:
-            # forall(['in0', 'in1'], '-in0 + in1', 'in1 - in0', 'eval', ('body', -1, 'value'), 'is_pure(in0) or is_pure(in1)')
-            case BinOp(
-                left=UnaryOp(op=USub(), operand=in0),
-                op=Add(),
-                right=in1) if is_pure(in0) or is_pure(in1):
-                nnode = BinOp(left=in1, op=Sub(), right=in0)
-                self.modified = True
-                copy_location(nnode, node)
-                nnode.old = None
-                return nnode
-
             case _:
                 return self.generic_visit(node)
 
@@ -625,6 +937,6 @@ class NumpyReverser(Rewriter):
             case _:
                 return self.generic_visit(node)
 
-ORDER = [NumpyRewriter, NumpyReverser]
+ORDER = [NumpyRewriter, NumpySpecialize, NumpyReverser]
 __all__ = ('ORDER',)
 __all__ += tuple([cls.__name__ for cls in ORDER])

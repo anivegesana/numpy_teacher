@@ -25,8 +25,9 @@ class ReferenceResolver(NodeTransformer):
         self.vars = vars
         self.counts = DummyCounter() if dummy else collections.Counter()
 
-    def visit_Name(self, node):
-        name = node.id
+    def visit_Name(self, node, name=None):
+        if name is None:
+            name = node.id
 
         if name in self.vars:
             var = self.vars[name]
@@ -38,13 +39,29 @@ class ReferenceResolver(NodeTransformer):
 
         return node
 
+    def visit_Starred(self, node):
+        # match list of arguments
+        if isinstance(node.ctx, Load):
+            name = '*' + node.value.id
+            return self.visit_Name(node.value, name)
+        return self.generic_visit(node)
+
     def visit_arg(self, node):
+        # Lambda argument replacement for variable name patterns
         name = node.arg
 
         if name in self.vars and isinstance(a_var := self.vars[name], var):
             node.arg = escaped(name)
 
         return node
+
+    def visit_UnaryOp(self, node):
+        # -a => (-a)
+        match node:
+            case UnaryOp(op=USub(), operand=Constant(value=value)):
+                return Constant(-value)
+            case _:
+                return self.generic_visit(node)
 
     def get_reference_identicality_constraint(self):
         if all(cnt == 0 for cnt in self.counts.values()):
@@ -130,6 +147,7 @@ class forall:
 
 def constforall(names, expr):
     # TODO: Decide to reverse or not? REVERSIBLE_POST
+    assert all('*' not in name for name in names)
     quantifiers = [
         escaped(f'Constant(value={name})', name)
         for name in names
@@ -198,6 +216,7 @@ def generate_rewrite_rules(*rewriters):
 
 from ast import *
 from ._core import *
+from ._comprehensions import *
 
 """, file=f)
         order = []
