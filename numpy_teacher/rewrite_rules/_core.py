@@ -30,10 +30,13 @@ class Warner(NodeVisitor):
     def visit(self, node):
         if hasattr(node, 'old'):
             original = get_source_segment(self.source, node)
+            new = unparse(node)
             if original:
-                msg = original + ' => ' + unparse(node)
+                if original == new:
+                    return self.generic_visit(node)
+                msg = original + ' => ' + new
             else:
-                msg = unparse(node)
+                msg = new
             warnings.warn_explicit(msg, SyntaxWarning, self.filename, node.lineno)
         else:
             self.generic_visit(node)
@@ -76,7 +79,7 @@ class VarRename(NodeTransformer):
     # TODO: handle generators and comprehensions
 '''
 
-def is_pure(node):
+def is_pure(node, name_check=lambda name: False):
     # TODO: Add pure functions and constant global variables somehow
     # TODO: Change to PurityVisiter
     match node:
@@ -84,26 +87,34 @@ def is_pure(node):
             return True
         case _ if hasattr(node, '_is_pure_cache'):
             return node._is_pure_cache
-        case Expr(value):
-            node._is_pure_cache = purity = is_pure(value)
+        case Name(id, Load()):
+            return name_check(id)
+        case Expr(value): # pragma: no cover
+            node._is_pure_cache = purity = is_pure(value, name_check)
             return purity
         case NamedExpr(target, value):
-            node._is_pure_cache = purity = is_pure(value)
+            node._is_pure_cache = purity = is_pure(value, name_check)
             return purity
         case UnaryOp(op, operand):
-            node._is_pure_cache = purity = is_pure(op)
+            node._is_pure_cache = purity = is_pure(operand, name_check)
             return purity
         case BinOp(left, op, right):
-            node._is_pure_cache = purity = is_pure(left) and is_pure(right)
+            node._is_pure_cache = purity = is_pure(left, name_check) and is_pure(right, name_check)
             return purity
         case BoolOp(op, values):
-            node._is_pure_cache = purity = all(is_pure(v) for v in values)
+            node._is_pure_cache = purity = all(is_pure(v, name_check) for v in values)
             return purity
         case Compare(left, ops, comparators):
-            node._is_pure_cache = purity = is_pure(left) and all(is_pure(v) for v in comparators)
+            node._is_pure_cache = purity = is_pure(left, name_check) and all(is_pure(v, name_check) for v in comparators)
             return purity
         case Tuple(elts, Load()):
-            node._is_pure_cache = purity = all(is_pure(v) for v in elts)
+            node._is_pure_cache = purity = all(is_pure(v, name_check) for v in elts)
+            return purity
+        case Slice(lower, upper, step):
+            node._is_pure_cache = purity = is_pure(lower, name_check) and is_pure(upper, name_check) and is_pure(step, name_check)
+            return purity
+        case Subscript(value, slice, Load()):
+            node._is_pure_cache = purity = is_pure(value, name_check) and is_pure(slice, name_check)
             return purity
         case _:
             return False
@@ -143,12 +154,12 @@ def dims_extend(tup, val, dim):
         tup = copy.copy(tup)
         if dim == -1:
             tup.elts.append(val)
-        elif dim > 0:
+        elif dim >= 0:
             tup.elts.insert(dim, val)
         else:
             tup.elts.insert(dim+1, val)
         return tup
-    raise NotImplementedError
+    raise NotImplementedError # pragma: no cover
 
 def dim_repeat(tup, val, dim):
     if isinstance(dim, UnaryOp) and isinstance(dim.op, USub) and isinstance(dim2 := dim.operand, Constant):
@@ -160,13 +171,13 @@ def dim_repeat(tup, val, dim):
         if isinstance(val, Constant):
             return Constant(tup.value * val.value)
         else:
-            return BinOp(left=tup.value, op=Mult(), right=val)
+            return BinOp(left=tup, op=Mult(), right=val)
     elif isinstance(tup, Tuple):
         tup = copy.copy(tup)
         otup = tup.elts[dim]
         if isinstance(val, Constant):
             tup.elts[dim] = Constant(otup.value * val.value)
         else:
-            tup.elts[dim] = BinOp(left=otup.value, op=Mult(), right=val)
+            tup.elts[dim] = BinOp(left=otup, op=Mult(), right=val)
         return tup
-    raise NotImplementedError
+    raise NotImplementedError # pragma: no cover

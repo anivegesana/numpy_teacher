@@ -10,7 +10,7 @@ import textwrap
 import os
 import re
 
-__all__ = ('forall', 'constforall', 'rewriter', 'generate_rewrite_rules', 'UPDATE_VISITOR_POST', 'DEFAULT_POST', 'REVERSIBLE_POST')
+__all__ = ('forall', '_forall', 'constforall', 'rewriter', 'generate_rewrite_rules', 'UPDATE_VISITOR_POST', 'DEFAULT_POST', 'REVERSIBLE_POST')
 
 class DummyCounter(collections.Counter):
     def __contains__(self, key):
@@ -37,13 +37,23 @@ class ReferenceResolver(NodeTransformer):
         if name in globconst.GLOBALS:
             return copy.copy(globconst.GLOBALS[name])
 
-        return node
+        return self.generic_visit(node)
 
     def visit_Starred(self, node):
         # match list of arguments
-        if isinstance(node.ctx, Load):
-            name = '*' + node.value.id
-            return self.visit_Name(node.value, name)
+        if isinstance(node.ctx, Load) and isinstance(name_node := node.value, Name):
+            name = '*' + name_node.id
+            return self.visit_Name(name_node, name)
+        return self.generic_visit(node)
+
+    def visit_keyword(self, node):
+        # match list of keyword arguments
+        if isinstance(name_node := node.value, Name):
+            name = '**' + name_node.id
+            kwarg = self.visit_Name(name_node, name)
+            if isinstance(kwarg, escaped):
+                kwarg.code = kwarg.code.replace('**', '*')
+                return kwarg
         return self.generic_visit(node)
 
     def visit_arg(self, node):
@@ -52,8 +62,9 @@ class ReferenceResolver(NodeTransformer):
 
         if name in self.vars and isinstance(a_var := self.vars[name], var):
             node.arg = escaped(name)
+            return node
 
-        return node
+        return self.generic_visit(node)
 
     def visit_UnaryOp(self, node):
         # -a => (-a)
@@ -96,7 +107,7 @@ class forall:
             if mode == 'eval':
                 attr = ('body', -1, 'value',)
             else:
-                attr = ('body',)
+                attr = ('body', -1,)
             self._attr_default = True
         else:
             self._attr_default = False
@@ -145,15 +156,34 @@ class forall:
 
         return f'{type(self).__name__}({", ".join(map(repr, arglist))})'
 
+_forall = forall
+
 def constforall(names, expr):
-    # TODO: Decide to reverse or not? REVERSIBLE_POST
     assert all('*' not in name for name in names)
     quantifiers = [
         escaped(f'Constant(value={name})', name)
         for name in names
     ]
     quantifiers.append(escaped(f'Constant(value={expr})', '_const'))
-    return forall(quantifiers, expr, '_const')
+    return _forall(quantifiers, expr, '_const', post=REVERSIBLE_POST)
+
+def forall(quantifiers, orig, fin, mode='eval', attr=None, cond=None, post=DEFAULT_POST):
+    j = 0
+    names = set()
+    for i in range(len(quantifiers)):
+        if isinstance(name := quantifiers[j], str) and name.startswith('^'):
+            quantifiers[j:j+1] = (name.replace('^', '*args'), name.replace('^', '**kwargs'))
+            names.add(name)
+            j += 2
+        else:
+            j += 1
+    for name in names:
+        aname = name.replace('^', '*args') + ', ' + name.replace('^', '**kwargs')
+        orig = orig.replace(name, aname)
+        fin = fin.replace(name, aname)
+        if attr: attr = attr.replace(name, aname)
+        if cond: cond = cond.replace(name, aname)
+    return _forall(quantifiers, orig, fin, mode=mode, attr=attr, cond=cond, post=post)
 
 _CASE_FINDER = re.compile('case (.*)\(')
 

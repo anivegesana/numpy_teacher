@@ -1,9 +1,11 @@
 from ast import *
 import dataclasses
 
+from ._core import is_pure
+
 from typing import Union
 
-__all__ = ('analyze_list_to_array',)
+__all__ = ('analyze_list_to_array', 'get_size_of_list_literal')
 
 class Dimension:
     pass
@@ -37,7 +39,10 @@ class Repeat(Dimension):
     def to_ast(self, rewriter):
         np = rewriter.aliases.numpy
         if isinstance(self.inner, AST):
-            inner_ast = self.inner
+            # Probably always unused because it is expected that inner is either
+            # another Repeat in the case we see [...] * i * j or ExpandDims in
+            # normal usage.
+            inner_ast = self.inner # pragma: no cover
         else:
             inner_ast = self.inner.to_ast(rewriter)
         # np.repeat(inner, reps, -1)
@@ -59,6 +64,7 @@ def collapse_binop(expr, binop):
         return [expr]
 
 def analyze_listcomp(listcomp):
+    # print(dump(listcomp, indent=4))
     return listcomp, None, True
 
 def analyze_dimension(listcomp):
@@ -108,3 +114,48 @@ def analyze_list_to_array(listcomp, rewriter):
     if isinstance(dims_tree, AST):
         return None
     return dims_tree.to_ast(rewriter)
+
+def get_size_of_list_literal(list):
+    if hasattr(list, '_are_elems_pure'):
+        return None
+    plain_elements = 0
+    stars = []
+    for elt in list.elts:
+        if isinstance(elt, Starred):
+            # sum(1 for _ in elt.value)
+            # likely will change into len later
+            stars.append(Call(
+                func=Name(id='sum', ctx=Load()),
+                args=[
+                    GeneratorExp(
+                        elt=Constant(value=1),
+                        generators=[
+                            comprehension(
+                                target=Name(id='_', ctx=Store()),
+                                iter=elt.value,
+                                ifs=[],
+                                is_async=0)])],
+                keywords=[])
+            )
+        elif is_pure(elt):
+            plain_elements += 1
+        else:
+            list._are_elems_pure = False
+            return None
+
+    if plain_elements == 0:
+        if len(stars) == 0:
+            return Constant(0)
+        else:
+            out = stars.pop(0)
+    else:
+        out = Constant(plain_elements)
+
+    for star in stars:
+        out = BinOp(
+            left=out,
+            op=Add(),
+            right=star
+        )
+
+    return out

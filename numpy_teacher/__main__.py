@@ -11,7 +11,7 @@ def rewrite_file(file):
 
     rewrites = std_rewrites
 
-    if not hasattr(file, 'name'):
+    if not hasattr(file, 'name'): # pragma: no cover
         with open(file) as f:
             source = f.read()
         filename = file
@@ -35,11 +35,15 @@ def rewrite_file(file):
 
 
 parser = argparse.ArgumentParser(description='A linter that teaches beginners how to use Numpy.')
-parser.add_argument('source', type=argparse.FileType('r'),
+parser.add_argument('source', type=argparse.FileType('r'), nargs='+',
                     help='file to lint')
 args = parser.parse_args()
 
-print(rewrite_file(args.source))
+for source in args.source:
+    if len(args.source) != 1:
+        print(source.name)
+        print("=====")
+    print(rewrite_file(source))
 
 # std_rewrites = [
 #     LoopToArrayRewriter(),

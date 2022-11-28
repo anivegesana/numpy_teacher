@@ -5,67 +5,92 @@ import textwrap
 
 generate_rewrite_rules(
 
-    rewriter('NumpyRewriter',
-        # List comprehensions
-        forall([var('v0'), 'in0'], '[v0 for v0 in in0]', 'list(in0)'),
-        forall([var('v0'), 'in0', 'in1'], '[v0 for v0 in in0 if in1]', 'list(filter(lambda v0: in1, in0))'), # post=REVERSIBLE_POST
+    rewriter('ComprehensionRewriter',
         escaped(f"""
 # This collapses multiple 'if's that follow each other in the same comprehension
 # into one 'if' with multiple 'and's
-# TODO: Generalize
-case ListComp(
-    elt=Name(id=v0, ctx=Load()),
-    generators=[
-        comprehension(
-            target=Name(id=_v0_0, ctx=Store()),
-            iter=in0,
-            ifs=in1,
-            is_async=0)]) if v0 == _v0_0 and len(in1) > 0:
-    nnode = Call(
-        func=Name(id='list', ctx=Load()),
-        args=[
-            Call(
-                func=Name(id='filter', ctx=Load()),
-                args=[
-                    Lambda(
-                        args=arguments(
-                            posonlyargs=[],
-                            args=[
-                                arg(arg=v0)],
-                            kwonlyargs=[],
-                            kw_defaults=[],
-                            defaults=[]),
-                        body=BoolOp(
-                            op=And(),
-                            values=in1
-                        )),
-                    in0],
-                keywords=[])],
-        keywords=[])
+case comprehension(
+        target=target,
+        iter=in0,
+        ifs=in1,
+        is_async=is_async) if len(in1) > 1:
+    nnode = comprehension(
+        target=target,
+        iter=in0,
+        ifs=[BoolOp(
+            op=And(),
+            values=in1
+        )],
+        is_async=is_async)
+    nnode.lineno = target.lineno
 {textwrap.indent(DEFAULT_POST, ' ' * 4)}
     return nnode
-"""),
+# Remove unnecesary iter
+case comprehension(
+        target=target,
+        iter=Call(
+            func=Name(id='iter', ctx=Load()),
+            args=[in0],
+            keywords=[]
+        ),
+        ifs=in1,
+        is_async=is_async):
+    nnode = comprehension(
+        target=target,
+        iter=in0,
+        ifs=in1,
+        is_async=is_async)
+    nnode.lineno = target.lineno
+{textwrap.indent(DEFAULT_POST, ' ' * 4)}
+    return nnode
+""")
+    ),
+
+    rewriter('NumpyRewriter',
+        # List comprehensions
+        forall([var('v0'), 'in0'], '[v0 for v0 in in0]', 'list(in0)'),
+        forall([var('v0'), 'in0'], '*v0, = in0', 'v0 = list(in0)', mode='exec'),
+        forall([var('v0'), 'in0', 'in1'], '[v0 for v0 in in0 if in1]', 'list(filter(lambda v0: in1, in0))'), # post=REVERSIBLE_POST
+
+        # forall(['*args'], '1 * [*args]', '[*args]'),
+        forall(['*elts', escaped('List() | ListComp() as val', 'val_match'), 'val'],
+                '1 * val_match', 'val'),
+        forall(['*elts', escaped('List() | ListComp() as val', 'val_match'), 'val'],
+                'val_match * 1', 'val'),
         forall([escaped('(ListComp() | List() | BinOp(op=Add() | Mult())) as in0', 'in0'), 'out'], 'np.array(in0)', 'out', cond='(out := analyze_list_to_array(in0, self))'),
 
         # Array building
         # TODO: Make these faster by using multilevel matching
-        forall(['*args'], 'np.array(range(*args))', 'np.arange(*args)'),
-        forall(['in0'], 'np.array(list(in0))', 'np.array(in0)'), # TODO: Check
+        forall(['*args', '^1'], 'np.array(range(*args), ^1)', 'np.arange(*args, ^1)'),
+        forall(['in0', '^1'], 'np.array(list(in0), ^1)', 'np.array(in0, ^1)'), # TODO: Check
 
         forall(['in0', 'in1'], 'np.array(filter(in0, in1))', 'np.extract(in0, np.array(in1))'),
 
-        # forall(['in0', 'in1'], 'np.array(in0 * [in1])', 'np.full(in0, in1)'), # TODO: won't work if in1 is a list
-        # forall(['in0', 'in1'], 'np.array([in1] * in0)', 'np.full(in0, in1)', cond='is_pure(in1) or is_pure(in0)'),
         # TODO: handle constant list comprehensions correctly instead of just this rule
         forall([var('v0'), 'in0', 'in1'], 'np.array([in1 for v0 in in0])', 'np.full(sum(1 for v0 in in0), in1)', cond='is_pure(in1)'), # i.e. in1 doesn't have v0 in it. Formalize this in is_pure with bound variables.
 
         # Create rules for constant evaluation?
+        forall(['v0', 'in0', '^1'], 'sum(1 for v0 in enumerate(in0, ^1))', 'sum(1 for v0 in in0)'),
         forall([
             'in0', var('v0'),
             escaped("(Call(func=f0)) as in0", 'x0'),
         ], 'sum(1 for v0 in x0)', 'len(in0)', cond="is_sized(f0)"),
+        forall([
+            'in0', var('v0'),
+            escaped("List() | ListComp() | Tuple() | Set() | SetComp() | Dict() | DictComp() as in0", 'x0'),
+        ], 'sum(1 for v0 in x0)', 'len(in0)'),
         forall(['in0'], 'len(range(in0))', 'max(in0, 0)'),
         forall(['in0', 'in1'], 'len(range(in0, in1))', 'max(-in0 + in1, 0)'),
+        forall([
+            'in0', 'in1',
+            escaped("List(elts=elts0) as in0", 'x0'),
+            escaped("List(elts=elts1) as in1", 'x1'),
+            escaped("List(elts=elts0+elts1)", 'x2'),
+        ], 'x0 + x1', 'x2'),
+        forall([
+            'in0', 'size',
+            escaped("(List() | Tuple()) as in0", 'x0'),
+        ], 'len(x0)', 'size', cond='size := get_size_of_list_literal(in0)'),
         # TODO: strides
 
         # TODO: create a constant forall constructor for pure functions:
@@ -79,12 +104,12 @@ case ListComp(
         constforall(['c0', 'c1'], 'c0 ** c1'),
         constforall(['c0', 'c1'], 'c0 or c1'),
         constforall(['c0', 'c1'], 'c0 and c1'),
-        constforall(['c0', 'c1'], 'min(c0, c1)'),
-        constforall(['c0', 'c1'], 'max(c0, c1)'),
+        # constforall(['c0', 'c1'], 'min(c0, c1)'),
+        # constforall(['c0', 'c1'], 'max(c0, c1)'),
 
         forall(['in0', 'in1'], '-in0 + in1', 'in1 - in0', cond='is_pure(in0) or is_pure(in1)'),
-        forall(['*cargs'], 'min(*cargs)', 'cval', cond='(cval := are_all_constants(cargs))'),
-        forall(['*cargs'], 'max(*cargs)', 'cval', cond='(cval := are_all_constants(cargs))'),
+        forall(['*cargs', escaped('Constant(min(*cval))', 'cmin')], 'min(*cargs)', 'cmin', cond='(cval := are_all_constants(cargs))'),
+        forall(['*cargs', escaped('Constant(max(*cval))', 'cmax')], 'max(*cargs)', 'cmax', cond='(cval := are_all_constants(cargs))'),
 
         # Fix strange things that might happen inside of _comprehensions.py
         forall([
@@ -106,20 +131,21 @@ case ListComp(
             escaped('dim_repeat(dims, reps, rdim)', 'new_dims')
         ], 'np.repeat(np.full(dims, inner), reps, rdim)', 'np.full(new_dims, inner)'),
         forall(['inner', 'dim'], 'np.stack([inner], dim)', 'np.expand_dims(inner, dim)'),
-        forall(['inner', 'dim'], 'np.stack(1 * [inner], dim)', 'np.expand_dims(inner, dim)'),
-        forall(['inner', 'dim'], 'np.stack([inner] * 1, dim)', 'np.expand_dims(inner, dim)'),
+        forall(['in0'], '*np.meshgrid(in0)', 'in0'),
+        forall(['in0'], '*np.meshgrid(in0, indexing="ij")', 'in0'), # TODO: for products, maybe?
+        # forall([var('v0'), 'in0', 'in1'], '(lambda v0: in0)(in1)', 'in0', cond='is_pure(in0, pure_filter_accept_once(v0.id))'),
     ),
 
     rewriter('NumpySpecialize',
         # Specializations of full
-        forall(['in0', escaped('Constant(float(0.))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0)'),
-        forall(['in0', escaped('Constant(float(1.))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0)'),
-        forall(['in0', escaped('Constant(int(0))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=int)'),
-        forall(['in0', escaped('Constant(int(1))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=int)'),
-        forall(['in0', escaped('Constant(bool(False))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=bool)'),
-        forall(['in0', escaped('Constant(bool(True))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=bool)'),
-        forall(['in0', escaped('Constant(complex(0+0j))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=complex)'),
-        forall(['in0', escaped('Constant(complex(1+0j))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=complex)'),
+        forall(['in0', escaped('Constant((0. as cv0))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0)', cond='isinstance(cv0, float)'),
+        forall(['in0', escaped('Constant((1. as cv0))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0)', cond='isinstance(cv0, float)'),
+        forall(['in0', escaped('Constant((False as cv0))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=bool)', cond='isinstance(cv0, bool)'),
+        forall(['in0', escaped('Constant((True as cv0))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=bool)', cond='isinstance(cv0, bool)'),
+        forall(['in0', escaped('Constant((0 as cv0))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=int)', cond='isinstance(cv0, int)'),
+        forall(['in0', escaped('Constant((1 as cv0))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=int)', cond='isinstance(cv0, int)'),
+        forall(['in0', escaped('Constant((0+0j as cv0))', 'c0')], 'np.full(in0, c0)', 'np.zeros(in0, dtype=complex)', cond='isinstance(cv0, complex)'),
+        forall(['in0', escaped('Constant((1+0j as cv0))', 'c0')], 'np.full(in0, c0)', 'np.ones(in0, dtype=complex)', cond='isinstance(cv0, complex)'),
     ),
 
     # 'RestoreReversablesRewriter'
