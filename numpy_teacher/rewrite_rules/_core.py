@@ -1,19 +1,39 @@
 from ast import *
 import copy
+import functools
 import os
 import types
 import warnings
 
+import numpy as np
+
 __all__ = ('Rewriter', 'RestoreReversablesRewriter', 'Warner', 'is_pure', 'is_sized', 'are_all_constants', 'dims_extend', 'dim_repeat')
 
+class Namespace(types.SimpleNamespace):
+    def __getattr__(self, attr):
+        return None
+
 class Rewriter(NodeTransformer):
-    def __init__(self):
-        self.aliases = types.SimpleNamespace()
+    def __init__(self, ctx):
+        self.aliases = Namespace()
+        self.ctx = ctx
     def visit_Import(self, node):
         for import_alias in node.names:
             if import_alias.name == 'numpy':
                 self.aliases.numpy = getattr(import_alias, 'asname', 'numpy')
+            if import_alias.name == 'math':
+                self.aliases.math = getattr(import_alias, 'asname', 'math')
         return node
+    def visit_best(self, *opts):
+        quality_score = self.ctx.quality_score
+        min_score = float('inf')
+        best = None
+        for opt in opts:
+            # print(unparse(opt), quality_score(opt), min_score)
+            if (score := quality_score(opt)) < min_score:
+                best = opt
+                min_score = score
+        return best
 
 class RestoreReversablesRewriter(Rewriter):
     def visit(self, node):
@@ -41,9 +61,8 @@ class Warner(NodeVisitor):
         else:
             self.generic_visit(node)
 
-'''
-TODO: Work on. Currently unused
-class VarRename(NodeTransformer):
+# TODO: Work on. Currently unused
+class VarRename(NodeTransformer): # pragma: no cover
     def __init__(self, vars, assignments={}):
         self.vars = vars
         self.assignments = assignments
@@ -77,47 +96,41 @@ class VarRename(NodeTransformer):
 
     # TODO: handle ast.ClassDef, ast.AsyncFunctionDef, etc.
     # TODO: handle generators and comprehensions
-'''
 
-def is_pure(node, name_check=lambda name: False):
-    # TODO: Add pure functions and constant global variables somehow
-    # TODO: Change to PurityVisiter
-    match node:
-        case Constant(value):
-            return True
-        case _ if hasattr(node, '_is_pure_cache'):
-            return node._is_pure_cache
-        case Name(id, Load()):
-            return name_check(id)
-        case Expr(value): # pragma: no cover
-            node._is_pure_cache = purity = is_pure(value, name_check)
-            return purity
-        case NamedExpr(target, value):
-            node._is_pure_cache = purity = is_pure(value, name_check)
-            return purity
-        case UnaryOp(op, operand):
-            node._is_pure_cache = purity = is_pure(operand, name_check)
-            return purity
-        case BinOp(left, op, right):
-            node._is_pure_cache = purity = is_pure(left, name_check) and is_pure(right, name_check)
-            return purity
-        case BoolOp(op, values):
-            node._is_pure_cache = purity = all(is_pure(v, name_check) for v in values)
-            return purity
-        case Compare(left, ops, comparators):
-            node._is_pure_cache = purity = is_pure(left, name_check) and all(is_pure(v, name_check) for v in comparators)
-            return purity
-        case Tuple(elts, Load()):
-            node._is_pure_cache = purity = all(is_pure(v, name_check) for v in elts)
-            return purity
-        case Slice(lower, upper, step):
-            node._is_pure_cache = purity = is_pure(lower, name_check) and is_pure(upper, name_check) and is_pure(step, name_check)
-            return purity
-        case Subscript(value, slice, Load()):
-            node._is_pure_cache = purity = is_pure(value, name_check) and is_pure(slice, name_check)
-            return purity
-        case _:
-            return False
+class PurityVisiter(NodeVisitor):
+    def __init__(self, name_check=lambda name: False):
+        self.name_check = name_check
+    @functools.cache
+    def visit(self, node):
+        f = self.visit
+        match node:
+            case Constant(value):
+                return True
+            case Name(id, Load()):
+                return self.name_check(id)
+            # case Expr(value):
+            #     return f(value)
+            case NamedExpr(target, value):
+                return f(value)
+            case UnaryOp(op, operand):
+                return f(operand)
+            case BinOp(left, op, right):
+                return f(left) and f(right)
+            case BoolOp(op, values):
+                return all(f(v) for v in values)
+            case Compare(left, ops, comparators):
+                return f(left) and all(f(v) for v in comparators)
+            case Tuple(elts, Load()):
+                return all(f(v) for v in elts)
+            case Slice(lower, upper, step):
+                return f(lower) and f(upper) and f(step)
+            case Subscript(value, slice, Load()):
+                return f(value) and f(slice)
+            case _:
+                return False
+
+# A convenient shortcut
+is_pure = PurityVisiter().visit
 
 def is_sized(classname):
     # TODO: use static analysis to see if a class has a __len__ function available

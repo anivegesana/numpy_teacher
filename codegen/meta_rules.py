@@ -1,6 +1,8 @@
 from ast import *
 from meta_nodes import *
 
+from binary_to_text import *
+
 import ast
 import collections
 import copy
@@ -10,7 +12,7 @@ import textwrap
 import os
 import re
 
-__all__ = ('forall', '_forall', 'constforall', 'rewriter', 'generate_rewrite_rules', 'UPDATE_VISITOR_POST', 'DEFAULT_POST', 'REVERSIBLE_POST')
+__all__ = ('forall', '_forall', 'constforall', 'rewriter', 'generate_rewrite_rules', 'gfcall', 'choices', 'UPDATE_VISITOR_POST', 'DEFAULT_POST', 'REVERSIBLE_POST')
 
 class DummyCounter(collections.Counter):
     def __contains__(self, key):
@@ -188,9 +190,21 @@ def forall(quantifiers, orig, fin, mode='eval', attr=None, cond=None, post=DEFAU
 _CASE_FINDER = re.compile('case (.*)\(')
 
 def _dump(node, annotate_fields=True, include_attributes=False, *, indent=None):
-    if isinstance(node, expr):
-        return repr(node)
-    return dump(node, annotate_fields, include_attributes, indent=indent)
+    match node:
+        case expr():
+            return repr(node)
+        case Call(
+            func=Name(id=fname, ctx=Load()),
+            args=args,
+            keywords=[]
+        ) if fname.startswith('_numpy_teacher_escaped__'):
+            fname = from_abc(fname[len('_numpy_teacher_escaped__'):])
+            return f"""{fname}({', '.join([
+                _dump(arg, annotate_fields, include_attributes, indent=indent)
+                for arg in args
+            ])})"""
+        case _:
+            return dump(node, annotate_fields, include_attributes, indent=indent)
 
 class rewriter:
     def __init__(self, name, *rules):
@@ -260,3 +274,13 @@ from ._comprehensions import *
                 case str():
                     order.append(a_rewriter)
         print(f"ORDER = [{', '.join(order)}]\n__all__ = ('ORDER',)\n__all__ += tuple([cls.__name__ for cls in ORDER])", file=f)
+
+def gfcall(funcname, *args):
+    return f'_numpy_teacher_escaped__{to_abc(funcname)}({", ".join(args)})'
+
+_choices_name = to_abc('self.visit_best')
+def choices(*opts):
+    '''
+    https://www.youtube.com/watch?v=bRChz-OYi9o
+    '''
+    return f'_numpy_teacher_escaped__{_choices_name}({", ".join(opts)})'

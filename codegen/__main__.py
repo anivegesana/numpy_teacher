@@ -5,6 +5,20 @@ import textwrap
 
 generate_rewrite_rules(
 
+    rewriter('PythagoreanRewriter',
+        # A fork in the road, a rule that requires a choice
+        forall([
+            'in0',
+            'opts',
+            escaped('opts[0]', 'opt0'),
+            escaped('opts[1]', 'opt1'),
+            escaped('*opts[2]', 'opt2'),
+        ], 'math.sqrt(in0)', choices(
+            'math.dist(opt0, opt1)',
+            'math.hypot(opt2)'
+        ), cond='opts := resolve_pythagorean(in0)'),
+    ),
+
     rewriter('ComprehensionRewriter',
         escaped(f"""
 # This collapses multiple 'if's that follow each other in the same comprehension
@@ -104,6 +118,7 @@ case comprehension(
         constforall(['c0', 'c1'], 'c0 ** c1'),
         constforall(['c0', 'c1'], 'c0 or c1'),
         constforall(['c0', 'c1'], 'c0 and c1'),
+        constforall(['c0'], 'abs(c0)'),
         # constforall(['c0', 'c1'], 'min(c0, c1)'),
         # constforall(['c0', 'c1'], 'max(c0, c1)'),
 
@@ -156,6 +171,8 @@ case comprehension(
         forall([var('v0'), 'in0', 'in1'], 'list(filter(lambda v0: in1, in0))', '[v0 for v0 in in0 if in1]'),
         # forall(['in0', 'in1'], 'np.array(filter(in0, in1))', 'np.extract(in0, np.array(in1))'),
         forall(['in0', 'in1'], 'np.extract(in0, np.array(in1))', 'np.extract(in0, in1)'),
-    )
+    ),
+
+    "RestoreReversablesRewriter",
 
 )

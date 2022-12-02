@@ -1,11 +1,13 @@
 from ast import *
+# from astroid.nodes import NodeNG as AST
 import dataclasses
+import itertools
 
-from ._core import is_pure
+from ._core import PurityVisiter, is_pure
 
 from typing import Union
 
-__all__ = ('analyze_list_to_array', 'get_size_of_list_literal')
+__all__ = ('analyze_list_to_array', 'collapse_binop', 'get_size_of_list_literal', 'is_power', 'resolve_pythagorean')
 
 class Dimension:
     pass
@@ -58,6 +60,7 @@ class Repeat(Dimension):
             keywords=[])
 
 def collapse_binop(expr, binop):
+    # binop must be associative
     if isinstance(expr, BinOp) and isinstance(expr.op, binop):
         return collapse_binop(expr.left, binop) + collapse_binop(expr.right, binop)
     else:
@@ -65,7 +68,7 @@ def collapse_binop(expr, binop):
 
 def analyze_listcomp(listcomp):
     # print(dump(listcomp, indent=4))
-    return listcomp, None, True
+    return listcomp, [], True
 
 def analyze_dimension(listcomp):
     dims = []
@@ -78,7 +81,7 @@ def analyze_dimension(listcomp):
                 listcomp, dim, ret = analyze_listcomp(listcomp)
                 if ret:
                     break
-                dims.append(dim)
+                dims.extend(dim)
             case BinOp(op=Mult()):
                 # TODO: Allow nonconstants if pure or matches correct order
                 elts = collapse_binop(listcomp, Mult)
@@ -159,3 +162,48 @@ def get_size_of_list_literal(list):
         )
 
     return out
+
+def all_equal(iterable):
+    g = itertools.groupby(iterable)
+    return next(g, True) and not next(g, False)
+
+is_pure_vars_allowed = PurityVisiter(name_check=lambda name: True).visit
+
+def is_power(expr):
+    match expr:
+        case BinOp(left=in0, op=Pow(), right=Constant(in1)):
+            return in0, in1
+        case BinOp(op=Mult()):
+            operands = collapse_binop(expr, Mult)
+            if not is_pure_vars_allowed(operands[0]):
+                return expr, 1
+            if not all_equal(operands):
+                return expr, 1
+            return operands[0], len(operands)
+        case _:
+            return expr, 1
+
+def resolve_pythagorean(pyth):
+    if ret := getattr(pyth, '_cache_resolve_pythagorean', None) is not None:
+        return ret
+
+    # math.dist(exprs0, exprs1)
+    # math.hypot(*exprs2)
+    exprs0 = []
+    exprs1 = []
+    exprs2 = []
+    for addend in collapse_binop(pyth, Add):
+        expr, two = is_power(addend)
+        if two != 2:
+            pyth._cache_resolve_pythagorean = False
+            return False
+        exprs2.append(expr)
+        match expr:
+            case BinOp(left=in0, op=Sub(), right=in1):
+                exprs0.append(in0)
+                exprs1.append(in1)
+            case _:
+                exprs0.append(expr)
+                exprs1.append(Constant(0))
+    pyth._cache_resolve_pythagorean = ret = List(exprs0), List(exprs1), exprs2
+    return ret

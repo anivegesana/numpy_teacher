@@ -7,6 +7,58 @@ from ._core import *
 from ._comprehensions import *
 
 
+class PythagoreanRewriter(Rewriter):
+    def visit_Call(self, node):
+        match node:
+            # forall(['in0', 'opts', opts[0], opts[1], *opts[2]], 'math.sqrt(in0)', '_numpy_teacher_escaped__NJMLMCMMIENMMPNJMPNKLFMIMLNJNK(math.dist(opt0, opt1), math.hypot(opt2))', 'eval', ('body', -1, 'value'), 'opts := resolve_pythagorean(in0)')
+            case Call(
+                func=Attribute(
+                    value=Name(id='math', ctx=Load()),
+                    attr='sqrt',
+                    ctx=Load()),
+                args=[
+                    in0],
+                keywords=[]) if opts := resolve_pythagorean(in0):
+                nnode = self.visit_best(Call(
+                    func=Attribute(
+                        value=Name(id='math', ctx=Load()),
+                        attr='dist',
+                        ctx=Load()),
+                    args=[
+                        opts[0],
+                        opts[1]],
+                    keywords=[]), Call(
+                    func=Attribute(
+                        value=Name(id='math', ctx=Load()),
+                        attr='hypot',
+                        ctx=Load()),
+                    args=[
+                        *opts[2]],
+                    keywords=[]))
+                print(unparse(Call(
+                    func=Attribute(
+                        value=Name(id='math', ctx=Load()),
+                        attr='dist',
+                        ctx=Load()),
+                    args=[
+                        opts[0],
+                        opts[1]],
+                    keywords=[])), unparse(Call(
+                    func=Attribute(
+                        value=Name(id='math', ctx=Load()),
+                        attr='hypot',
+                        ctx=Load()),
+                    args=[
+                        *opts[2]],
+                    keywords=[])))
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = None
+                return nnode
+
+            case _:
+                return self.generic_visit(node)
+
 class ComprehensionRewriter(Rewriter):
     def visit_comprehension(self, node):
         match node:
@@ -517,6 +569,18 @@ class NumpyRewriter(Rewriter):
                 self.modified = True
                 copy_location(nnode, node)
                 nnode.old = None
+                return nnode
+
+            # forall([Constant(value=c0), Constant(value=abs(c0))], 'abs(c0)', '_const')
+            case Call(
+                func=Name(id='abs', ctx=Load()),
+                args=[
+                    Constant(value=c0)],
+                keywords=[]):
+                nnode = Constant(value=abs(c0))
+                self.modified = True
+                copy_location(nnode, node)
+                nnode.old = node
                 return nnode
 
             # forall(['*cargs', Constant(min(*cval))], 'min(*cargs)', 'cmin', 'eval', ('body', -1, 'value'), '(cval := are_all_constants(cargs))')
@@ -1040,6 +1104,6 @@ class NumpyReverser(Rewriter):
             case _:
                 return self.generic_visit(node)
 
-ORDER = [ComprehensionRewriter, NumpyRewriter, NumpySpecialize, NumpyReverser]
+ORDER = [PythagoreanRewriter, ComprehensionRewriter, NumpyRewriter, NumpySpecialize, NumpyReverser, RestoreReversablesRewriter]
 __all__ = ('ORDER',)
 __all__ += tuple([cls.__name__ for cls in ORDER])

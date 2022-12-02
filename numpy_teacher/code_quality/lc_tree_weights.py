@@ -36,7 +36,7 @@ class SimpleWeightedListCompVisitor(ast.NodeVisitor):
 
     def generic_visit(self, node):
         if self.weight_dict:
-            self.weight += self.weight_dict.get(type(node), 0)
+            self.weight += self.weight_dict.get(type(node), 1) # TODO: Change back. This is for a test of choices.
         ast.NodeVisitor.generic_visit(self, node)
 
 
