@@ -14,14 +14,13 @@ DEFAULT_WEIGHTS = {
 }
 
 
-def get_expression_weight(expr, weight_dict=DEFAULT_WEIGHTS):
-    # Todo: clean up
+def get_expression_weight(expr, weight_dict=DEFAULT_WEIGHTS, default_weight=0):
     try:
         tree = ast.parse(expr)
     except:
-        return 0
+        return -1
 
-    visitor = SimpleWeightedListCompVisitor(weight_dict)
+    visitor = SimpleWeightAccumulator(weight_dict, default_weight)
     visitor.visit(tree)
 
     weight = visitor.weight
@@ -29,14 +28,35 @@ def get_expression_weight(expr, weight_dict=DEFAULT_WEIGHTS):
     return weight
 
 
-class SimpleWeightedListCompVisitor(ast.NodeVisitor):
-    def __init__(self, weight_dict):
+class SimpleWeightAccumulator(ast.NodeVisitor):
+    def __init__(self, weight_dict, default_weight=0):
         self.weight = 0
         self.weight_dict = weight_dict
+        self.default_weight = default_weight
 
     def generic_visit(self, node):
         if self.weight_dict:
-            self.weight += self.weight_dict.get(type(node), 1) # TODO: Change back. This is for a test of choices.
+            self.weight += self.weight_dict.get(type(node), self.default_weight)
+        else:
+            self.weight += self.default_weight
+        ast.NodeVisitor.generic_visit(self, node)
+
+
+class LeafWeightAccumulator(ast.NodeVisitor):
+    def __init__(self, weight_dict, default_weight=0):
+        self.weight = 0
+        self.weight_dict = weight_dict
+        self.default_weight = default_weight
+
+    def generic_visit(self, node):
+        child_nodes = ast.iter_child_nodes(node)
+
+        if len(list(child_nodes)) == 0:
+            if self.weight_dict:
+                self.weight += self.weight_dict.get(type(node), self.default_weight)
+            else:
+                self.weight += self.default_weight
+
         ast.NodeVisitor.generic_visit(self, node)
 
 
