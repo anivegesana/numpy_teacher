@@ -7,6 +7,7 @@ import pickle
 
 from collections import Counter
 from typing import List
+import os
 
 TEST_CODE =\
 """
@@ -43,7 +44,7 @@ AST_NODES = {
 def main(n_files):
     freq_dict = frequency_analysis("py150", split="train", proportion=1, n_files=n_files)
 
-    with open(f"freq_analysis_{n_files}_files.txt", "wb") as freq_file:
+    with open(os.path.join(os.path.dirname(__file__), f"freq_analysis_{n_files}_files.pkl"), "wb") as freq_file:
         pickle.dump(freq_dict, freq_file)
 
     print(freq_dict)
